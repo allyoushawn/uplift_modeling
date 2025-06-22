@@ -146,7 +146,7 @@ def make_targeted_regularization_loss(e_x, y0_pred, y1_pred, Y, T, epsilon):
     
     return t_loss
 
-def train_dragonnet(model, train_loader, val_loader, optimizer, num_epochs, alpha=0.1, beta=0.1, device=device):
+def train_dragonnet(model, train_loader, train_for_eval_loader, val_loader, optimizer, num_epochs, alpha=0.1, beta=0.1, device=device):
     """Train the DragonNet model"""
     print("Starting training...")
     
@@ -225,6 +225,18 @@ def train_dragonnet(model, train_loader, val_loader, optimizer, num_epochs, alph
             print(f"Epoch {epoch:3d}: Train Loss = {avg_train_loss:.4f}, Val Loss = {avg_val_loss:.4f}")
             print(f"  Regression: {avg_regression_loss:.4f}, BCE: {avg_bce_loss:.4f}, T-Loss: {avg_t_loss:.4f}")
             print(f"  Epsilon: {model.epsilon.item():.6f}")
+
+            # Evaluate model on train set
+            print("\n" + "="*50)
+            print("TRAIN SET EVALUATION")
+            print("="*50)
+            tau_hat_train, y_true_train, t_true_train = evaluate_dragonnet(model, train_for_eval_loader, device)
+
+            # Evaluate model on validation set
+            print("\n" + "="*50)
+            print("VALIDATION SET EVALUATION")
+            print("="*50)
+            tau_hat_val, y_true_val, t_true_val = evaluate_dragonnet(model, val_loader, device)
         
         if patience_counter >= patience:
             print(f"Early stopping at epoch {epoch}")
@@ -305,6 +317,7 @@ def main():
     test_dataset = CausalDataset(X_test_tensor, y_test_tensor, t_test_tensor)
     
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+    train_for_eval_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=False)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
     
@@ -318,7 +331,7 @@ def main():
     
     # Train model
     model = train_dragonnet(
-        model, train_loader, val_loader, optimizer, 
+        model, train_loader, train_for_eval_loader, val_loader, optimizer, 
         num_epochs=args.num_epochs, 
         alpha=args.alpha, 
         beta=args.beta, 
