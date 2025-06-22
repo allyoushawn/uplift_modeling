@@ -45,7 +45,7 @@ echo "All required data files found. Starting T-learner..."
 echo ""
 
 # Run the T-learner script
-python models/t_learner/run_t_learner.py --data_folder "$DATA_FOLDER"
+python t_learner/models/t_learner/run_t_learner.py --data_folder "$DATA_FOLDER"
 
 echo ""
 echo "=========================================="
