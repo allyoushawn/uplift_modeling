@@ -1,6 +1,6 @@
 # Criteo Uplift Modeling - Data Preparation
 
-This project demonstrates data preparation for uplift modeling using the Criteo dataset.
+This project demonstrates data preparation for uplift modeling using the [Criteo dataset](https://arxiv.org/pdf/2111.10106).
 
 ## Overview
 
