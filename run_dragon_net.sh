@@ -16,6 +16,8 @@ python dragon_net/run_dragon_net.py \
     --num_epochs 50 \
     --lr 0.001 \
     --alpha 0.1 \
-    --beta 0.1
+    --beta 0.1 \
+    --hidden_sizes 200,100,100 \
+    --dropout 0.1
 
 echo "DragonNet training completed!" 

@@ -7,6 +7,7 @@ from sklearn.preprocessing import StandardScaler
 from sklift.metrics import uplift_auc_score, uplift_at_k
 import argparse
 import os
+import time
 
 # Check for GPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -77,30 +78,28 @@ class CausalDataset(Dataset):
         return self.X[idx], self.y[idx], self.t[idx]
 
 class DragonNet(nn.Module):
-    def __init__(self, input_dim):
+    def __init__(self, input_dim, hidden_sizes=[200, 100, 100], dropout=0.1):
         super(DragonNet, self).__init__()
         
         # Shared representation layers
-        self.shared = nn.Sequential(
-            nn.Linear(input_dim, 200),
-            nn.ELU(),
-            nn.Dropout(0.1),
-            nn.Linear(200, 100),
-            nn.ELU(),
-            nn.Dropout(0.1),
-            nn.Linear(100, 100),
-            nn.ELU()
-        )
+        layers = []
+        last_dim = input_dim
+        for h in hidden_sizes:
+            layers.append(nn.Linear(last_dim, h))
+            layers.append(nn.ELU())
+            layers.append(nn.Dropout(dropout))
+            last_dim = h
+        self.shared = nn.Sequential(*layers)
         
         # Treatment prediction head (Propensity Score)
         self.propensity_head = nn.Sequential(
-            nn.Linear(100, 1),
+            nn.Linear(last_dim, 1),
             nn.Sigmoid()
         )
         
         # Outcome prediction heads
-        self.outcome_head_0 = nn.Sequential(nn.Linear(100, 1))  # Y(0)
-        self.outcome_head_1 = nn.Sequential(nn.Linear(100, 1))  # Y(1)
+        self.outcome_head_0 = nn.Sequential(nn.Linear(last_dim, 1))  # Y(0)
+        self.outcome_head_1 = nn.Sequential(nn.Linear(last_dim, 1))  # Y(1)
 
         # Learnable epsilon (initialized small)
         self.epsilon = nn.Parameter(torch.tensor(1e-6))
@@ -154,7 +153,9 @@ def train_dragonnet(model, train_loader, train_for_eval_loader, val_loader, opti
     patience = 10
     patience_counter = 0
     
+    total_start_time = time.time()
     for epoch in range(num_epochs):
+        epoch_start_time = time.time()
         # Training phase
         model.train()
         total_train_loss = 0
@@ -238,6 +239,11 @@ def train_dragonnet(model, train_loader, train_for_eval_loader, val_loader, opti
             print("="*50)
             tau_hat_val, y_true_val, t_true_val = evaluate_dragonnet(model, val_loader, device)
         
+        epoch_end_time = time.time()
+        epoch_time = epoch_end_time - epoch_start_time
+        total_elapsed_time = epoch_end_time - total_start_time
+        print(f"[TIMER] Epoch {epoch+1}/{num_epochs} finished. Time for this epoch: {epoch_time:.2f} seconds. Total elapsed: {total_elapsed_time:.2f} seconds.")
+        
         if patience_counter >= patience:
             print(f"Early stopping at epoch {epoch}")
             break
@@ -299,7 +305,12 @@ def main():
     parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
     parser.add_argument('--alpha', type=float, default=0.1, help='Weight for BCE loss')
     parser.add_argument('--beta', type=float, default=0.1, help='Weight for targeted regularization loss')
+    parser.add_argument('--hidden_sizes', type=str, default='200,100,100', help='Comma-separated list for hidden layer sizes (e.g., 200,100,100)')
+    parser.add_argument('--dropout', type=float, default=0.1, help='Dropout rate for all hidden layers')
     args = parser.parse_args()
+    
+    # Parse hidden_sizes argument
+    hidden_sizes = [int(x) for x in args.hidden_sizes.split(',') if x.strip()]
     
     # Load data
     (X_train, y_train, t_train), (X_val, y_val, t_val), (X_test, y_test, t_test) = load_criteo_data(args.data_dir)
@@ -323,10 +334,10 @@ def main():
     
     # Initialize model
     input_dim = X_train.shape[1]
-    model = DragonNet(input_dim).to(device)
+    model = DragonNet(input_dim, hidden_sizes=hidden_sizes, dropout=args.dropout).to(device)
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     
-    print(f"Model initialized with {input_dim} input features")
+    print(f"Model initialized with {input_dim} input features, hidden sizes {hidden_sizes}, and dropout {args.dropout}")
     print(f"Total parameters: {sum(p.numel() for p in model.parameters()):,}")
     
     # Train model
