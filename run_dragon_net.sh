@@ -9,6 +9,10 @@ if [ -d "venv" ]; then
     source venv/bin/activate
 fi
 
+# Set log directory for TensorBoard
+LOG_DIR="runs"
+mkdir -p "$LOG_DIR"
+
 # Run DragonNet with default parameters
 python dragon_net/run_dragon_net.py \
     --data_dir data \
@@ -18,6 +22,7 @@ python dragon_net/run_dragon_net.py \
     --alpha 0.1 \
     --beta 0.1 \
     --hidden_sizes 200,100,100 \
-    --dropout 0.1
+    --dropout 0.1 \
+    --log_dir "$LOG_DIR"
 
 echo "DragonNet training completed!" 

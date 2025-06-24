@@ -8,6 +8,7 @@ from sklift.metrics import uplift_auc_score, uplift_at_k
 import argparse
 import os
 import time
+from torch.utils.tensorboard import SummaryWriter
 
 # Check for GPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -145,7 +146,7 @@ def make_targeted_regularization_loss(e_x, y0_pred, y1_pred, Y, T, epsilon):
     
     return t_loss
 
-def train_dragonnet(model, train_loader, train_for_eval_loader, val_loader, optimizer, num_epochs, alpha=0.1, beta=0.1, device=device):
+def train_dragonnet(model, train_loader, train_for_eval_loader, val_loader, optimizer, num_epochs, alpha=0.1, beta=0.1, device=device, writer=None):
     """Train the DragonNet model"""
     print("Starting training...")
     
@@ -215,6 +216,15 @@ def train_dragonnet(model, train_loader, train_for_eval_loader, val_loader, opti
         avg_bce_loss = total_bce_loss / len(train_loader)
         avg_t_loss = total_t_loss / len(train_loader)
         
+        # Log losses and epsilon to TensorBoard
+        if writer is not None:
+            writer.add_scalar('Loss/Train', avg_train_loss, epoch)
+            writer.add_scalar('Loss/Val', avg_val_loss, epoch)
+            writer.add_scalar('Loss/Regression', avg_regression_loss, epoch)
+            writer.add_scalar('Loss/BCE', avg_bce_loss, epoch)
+            writer.add_scalar('Loss/T-Loss', avg_t_loss, epoch)
+            writer.add_scalar('Epsilon', model.epsilon.item(), epoch)
+        
         # Early stopping
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
@@ -231,13 +241,13 @@ def train_dragonnet(model, train_loader, train_for_eval_loader, val_loader, opti
             print("\n" + "="*50)
             print("TRAIN SET EVALUATION")
             print("="*50)
-            tau_hat_train, y_true_train, t_true_train = evaluate_dragonnet(model, train_for_eval_loader, device)
+            tau_hat_train, y_true_train, t_true_train, train_metrics = evaluate_dragonnet(model, train_for_eval_loader, device, writer, epoch, split='Train')
 
             # Evaluate model on validation set
             print("\n" + "="*50)
             print("VALIDATION SET EVALUATION")
             print("="*50)
-            tau_hat_val, y_true_val, t_true_val = evaluate_dragonnet(model, val_loader, device)
+            tau_hat_val, y_true_val, t_true_val, val_metrics = evaluate_dragonnet(model, val_loader, device, writer, epoch, split='Val')
         
         epoch_end_time = time.time()
         epoch_time = epoch_end_time - epoch_start_time
@@ -250,7 +260,7 @@ def train_dragonnet(model, train_loader, train_for_eval_loader, val_loader, opti
     
     return model
 
-def evaluate_dragonnet(model, data_loader, device=device):
+def evaluate_dragonnet(model, data_loader, device=device, writer=None, epoch=None, split=None):
     """Evaluate the DragonNet model and compute treatment effects using uplift metrics"""
     model.eval()
     tau_hat_dragonnet = []
@@ -284,18 +294,37 @@ def evaluate_dragonnet(model, data_loader, device=device):
         print(f"AUUC Score: {auuc_score:.4f}")
     except Exception as e:
         print(f"Could not compute AUUC: {e}")
+        auuc_score = None
     
     # Compute Uplift at K for different K values
     k_values = [0.1, 0.2, 0.3, 0.4, 0.5]
+    uplift_at_k_scores = {}
     for k in k_values:
         try:
             uplift_k = uplift_at_k(y_true_array, tau_hat_dragonnet, t_true_array, k=k, strategy="overall")
             print(f"Uplift at {int(k*100)}%: {uplift_k:.4f}")
+            uplift_at_k_scores[k] = uplift_k
         except Exception as e:
             print(f"Could not compute Uplift at {int(k*100)}%: {e}")
+            uplift_at_k_scores[k] = None
     
+    # Log uplift metrics to TensorBoard
+    if writer is not None and epoch is not None and split is not None:
+        writer.add_scalar(f'Uplift/{split}_Avg_Treatment_Effect', np.mean(tau_hat_dragonnet), epoch)
+        writer.add_scalar(f'Uplift/{split}_Std_Treatment_Effect', np.std(tau_hat_dragonnet), epoch)
+        if auuc_score is not None:
+            writer.add_scalar(f'Uplift/{split}_AUUC', auuc_score, epoch)
+        for k, score in uplift_at_k_scores.items():
+            if score is not None:
+                writer.add_scalar(f'Uplift/{split}_Uplift_at_{int(k*100)}', score, epoch)
     
-    return tau_hat_dragonnet, y_true_array, t_true_array
+    metrics = {
+        'avg_treatment_effect': np.mean(tau_hat_dragonnet),
+        'std_treatment_effect': np.std(tau_hat_dragonnet),
+        'auuc': auuc_score,
+        'uplift_at_k': uplift_at_k_scores
+    }
+    return tau_hat_dragonnet, y_true_array, t_true_array, metrics
 
 def main():
     parser = argparse.ArgumentParser(description="Train DragonNet on Criteo data")
@@ -307,6 +336,7 @@ def main():
     parser.add_argument('--beta', type=float, default=0.1, help='Weight for targeted regularization loss')
     parser.add_argument('--hidden_sizes', type=str, default='200,100,100', help='Comma-separated list for hidden layer sizes (e.g., 200,100,100)')
     parser.add_argument('--dropout', type=float, default=0.1, help='Dropout rate for all hidden layers')
+    parser.add_argument('--log_dir', type=str, default='runs', help='TensorBoard log directory')
     args = parser.parse_args()
     
     # Parse hidden_sizes argument
@@ -340,28 +370,33 @@ def main():
     print(f"Model initialized with {input_dim} input features, hidden sizes {hidden_sizes}, and dropout {args.dropout}")
     print(f"Total parameters: {sum(p.numel() for p in model.parameters()):,}")
     
+    # TensorBoard writer setup
+    writer = SummaryWriter(log_dir=args.log_dir)
+    
     # Train model
     model = train_dragonnet(
         model, train_loader, train_for_eval_loader, val_loader, optimizer, 
         num_epochs=args.num_epochs, 
         alpha=args.alpha, 
         beta=args.beta, 
-        device=device
+        device=device,
+        writer=writer
     )
     
     # Evaluate model on test set
     print("\n" + "="*50)
     print("TEST SET EVALUATION")
     print("="*50)
-    tau_hat_test, y_true_test, t_true_test = evaluate_dragonnet(model, test_loader, device)
+    tau_hat_test, y_true_test, t_true_test, test_metrics = evaluate_dragonnet(model, test_loader, device, writer, args.num_epochs, split='Test')
     
     # Evaluate model on validation set
     print("\n" + "="*50)
     print("VALIDATION SET EVALUATION")
     print("="*50)
-    tau_hat_val, y_true_val, t_true_val = evaluate_dragonnet(model, val_loader, device)
+    tau_hat_val, y_true_val, t_true_val, val_metrics = evaluate_dragonnet(model, val_loader, device, writer, args.num_epochs, split='Val')
     
     print("\nTraining completed successfully!")
+    writer.close()
 
 if __name__ == "__main__":
     main()
