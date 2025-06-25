@@ -146,118 +146,73 @@ def make_targeted_regularization_loss(e_x, y0_pred, y1_pred, Y, T, epsilon):
     
     return t_loss
 
-def train_dragonnet(model, train_loader, train_for_eval_loader, val_loader, optimizer, num_epochs, alpha=0.1, beta=0.1, device=device, writer=None):
+def train_dragonnet(model, train_loader, train_for_eval_loader, val_loader, optimizer, num_epochs, alpha=0.1, beta=0.1, device=device, writer=None, patience=10, eval_interval=10):
     """Train the DragonNet model"""
     print("Starting training...")
-    
     best_val_loss = float('inf')
-    patience = 10
     patience_counter = 0
-    
     total_start_time = time.time()
     for epoch in range(num_epochs):
         epoch_start_time = time.time()
         # Training phase
         model.train()
-        total_train_loss = 0
-        total_regression_loss = 0
-        total_bce_loss = 0
-        total_t_loss = 0
-        
         for batch_X, batch_y, batch_t in train_loader:
             batch_X, batch_y, batch_t = batch_X.to(device), batch_y.to(device), batch_t.to(device)
-            
             optimizer.zero_grad()
-            
             # Forward pass
             e_x, y_0_pred, y_1_pred = model(batch_X)
-            
             # Compute losses
             regression_loss = make_regression_loss(y_0_pred, y_1_pred, batch_y, batch_t)
             bce_loss = make_binary_classification_loss(e_x, batch_t)
             vanila_loss = regression_loss + alpha * bce_loss
-            
             t_loss = make_targeted_regularization_loss(e_x, y_0_pred, y_1_pred, batch_y, batch_t, model.epsilon)
             loss = vanila_loss + beta * t_loss
-            
             # Backward pass
             loss.backward()
             optimizer.step()
-            
-            total_train_loss += loss.item()
-            total_regression_loss += regression_loss.item()
-            total_bce_loss += bce_loss.item()
-            total_t_loss += t_loss.item()
-
-        
         # Validation phase
         model.eval()
         total_val_loss = 0
-        
         with torch.no_grad():
             for batch_X, batch_y, batch_t in val_loader:
                 batch_X, batch_y, batch_t = batch_X.to(device), batch_y.to(device), batch_t.to(device)
-                
                 e_x, y_0_pred, y_1_pred = model(batch_X)
-                
                 regression_loss = make_regression_loss(y_0_pred, y_1_pred, batch_y, batch_t)
                 bce_loss = make_binary_classification_loss(e_x, batch_t)
                 vanila_loss = regression_loss + alpha * bce_loss
-                
                 t_loss = make_targeted_regularization_loss(e_x, y_0_pred, y_1_pred, batch_y, batch_t, model.epsilon)
                 loss = vanila_loss + beta * t_loss
-                
                 total_val_loss += loss.item()
-        
         # Calculate average losses
-        avg_train_loss = total_train_loss / len(train_loader)
         avg_val_loss = total_val_loss / len(val_loader)
-        avg_regression_loss = total_regression_loss / len(train_loader)
-        avg_bce_loss = total_bce_loss / len(train_loader)
-        avg_t_loss = total_t_loss / len(train_loader)
-        
-        # Log losses and epsilon to TensorBoard
-        if writer is not None:
-            writer.add_scalar('Loss/Train', avg_train_loss, epoch)
-            writer.add_scalar('Loss/Val', avg_val_loss, epoch)
-            writer.add_scalar('Loss/Regression', avg_regression_loss, epoch)
-            writer.add_scalar('Loss/BCE', avg_bce_loss, epoch)
-            writer.add_scalar('Loss/T-Loss', avg_t_loss, epoch)
-            writer.add_scalar('Epsilon', model.epsilon.item(), epoch)
-        
         # Early stopping
-        if avg_val_loss < best_val_loss:
-            best_val_loss = avg_val_loss
-            patience_counter = 0
-        else:
-            patience_counter += 1
-        
-        if epoch % 10 == 0 or epoch == num_epochs - 1:
-            print(f"Epoch {epoch:3d}: Train Loss = {avg_train_loss:.4f}, Val Loss = {avg_val_loss:.4f}")
-            print(f"  Regression: {avg_regression_loss:.4f}, BCE: {avg_bce_loss:.4f}, T-Loss: {avg_t_loss:.4f}")
-            print(f"  Epsilon: {model.epsilon.item():.6f}")
-
+        if patience is not None:
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                patience_counter = 0
+            else:
+                patience_counter += 1
+            if patience_counter >= patience:
+                print(f"Early stopping at epoch {epoch}")
+                break
+        # Evaluation interval
+        if eval_interval is not None and (epoch % eval_interval == 0 or epoch == num_epochs - 1):
+            print(f"Epoch {epoch:3d}: Val Loss = {avg_val_loss:.4f}, Epsilon: {model.epsilon.item():.6f}")
+            writer.add_scalar('Epsilon', model.epsilon.item(), epoch)
             # Evaluate model on train set
             print("\n" + "="*50)
             print("TRAIN SET EVALUATION")
             print("="*50)
             tau_hat_train, y_true_train, t_true_train, train_metrics = evaluate_dragonnet(model, train_for_eval_loader, device, writer, epoch, split='Train')
-
             # Evaluate model on validation set
             print("\n" + "="*50)
             print("VALIDATION SET EVALUATION")
             print("="*50)
             tau_hat_val, y_true_val, t_true_val, val_metrics = evaluate_dragonnet(model, val_loader, device, writer, epoch, split='Val')
-        
         epoch_end_time = time.time()
         epoch_time = epoch_end_time - epoch_start_time
         total_elapsed_time = epoch_end_time - total_start_time
         print(f"[TIMER] Epoch {epoch+1}/{num_epochs} finished. Time for this epoch: {epoch_time:.2f} seconds. Total elapsed: {total_elapsed_time:.2f} seconds.")
-        
-        if patience_counter >= patience:
-            print(f"Early stopping at epoch {epoch}")
-            break
-    
     return model
 
 def evaluate_dragonnet(model, data_loader, device=device, writer=None, epoch=None, split=None):
@@ -266,28 +221,41 @@ def evaluate_dragonnet(model, data_loader, device=device, writer=None, epoch=Non
     tau_hat_dragonnet = []
     y_true_list = []
     t_true_list = []
-    
+    y0_pred_list = []
+    y1_pred_list = []
+    e_x_list = []
     with torch.no_grad():
         for batch_X, batch_y, batch_t in data_loader:
             batch_X = batch_X.to(device)
+            batch_y = batch_y.to(device)
+            batch_t = batch_t.to(device)
             e_x_test, y0_pred_test, y1_pred_test = model(batch_X)
-            
+            # Store predictions and true values
+            y0_pred_list.append(y0_pred_test.cpu())
+            y1_pred_list.append(y1_pred_test.cpu())
+            e_x_list.append(e_x_test.cpu())
+            y_true_list.append(batch_y.cpu())
+            t_true_list.append(batch_t.cpu())
             # Compute treatment effects
             tau_batch = (y1_pred_test - y0_pred_test).cpu().numpy()
             tau_hat_dragonnet.extend(tau_batch)
-            
-            y_true_list.extend(batch_y.numpy())
-            t_true_list.extend(batch_t.numpy())
-    
+    # Concatenate all batches
+    y0_pred_all = torch.cat(y0_pred_list, dim=0)
+    y1_pred_all = torch.cat(y1_pred_list, dim=0)
+    e_x_all = torch.cat(e_x_list, dim=0)
+    y_true_all = torch.cat(y_true_list, dim=0)
+    t_true_all = torch.cat(t_true_list, dim=0)
     tau_hat_dragonnet = np.array(tau_hat_dragonnet).flatten()
-    y_true_array = np.array(y_true_list).flatten()
-    t_true_array = np.array(t_true_list).flatten()
-    
+    y_true_array = y_true_all.cpu().numpy().flatten()
+    t_true_array = t_true_all.cpu().numpy().flatten()
+    # Compute losses on the entire set
+    regression_loss = make_regression_loss(y0_pred_all, y1_pred_all, y_true_all, t_true_all).item()
+    bce_loss = make_binary_classification_loss(e_x_all, t_true_all).item()
+    t_loss = make_targeted_regularization_loss(e_x_all, y0_pred_all, y1_pred_all, y_true_all, t_true_all, model.epsilon).item()
     # Compute uplift metrics
     print(f"\nModel Evaluation:")
     print(f"Average predicted treatment effect: {np.mean(tau_hat_dragonnet):.4f}")
     print(f"Std of predicted treatment effects: {np.std(tau_hat_dragonnet):.4f}")
-    
     # Compute AUUC (Area Under Uplift Curve)
     try:
         auuc_score = uplift_auc_score(y_true_array, tau_hat_dragonnet, t_true_array)
@@ -295,7 +263,6 @@ def evaluate_dragonnet(model, data_loader, device=device, writer=None, epoch=Non
     except Exception as e:
         print(f"Could not compute AUUC: {e}")
         auuc_score = None
-    
     # Compute Uplift at K for different K values
     k_values = [0.1, 0.2, 0.3, 0.4, 0.5]
     uplift_at_k_scores = {}
@@ -307,8 +274,7 @@ def evaluate_dragonnet(model, data_loader, device=device, writer=None, epoch=Non
         except Exception as e:
             print(f"Could not compute Uplift at {int(k*100)}%: {e}")
             uplift_at_k_scores[k] = None
-    
-    # Log uplift metrics to TensorBoard
+    # Log uplift metrics and losses to TensorBoard
     if writer is not None and epoch is not None and split is not None:
         writer.add_scalar(f'Uplift/{split}_Avg_Treatment_Effect', np.mean(tau_hat_dragonnet), epoch)
         writer.add_scalar(f'Uplift/{split}_Std_Treatment_Effect', np.std(tau_hat_dragonnet), epoch)
@@ -317,12 +283,18 @@ def evaluate_dragonnet(model, data_loader, device=device, writer=None, epoch=Non
         for k, score in uplift_at_k_scores.items():
             if score is not None:
                 writer.add_scalar(f'Uplift/{split}_Uplift_at_{int(k*100)}', score, epoch)
-    
+        # Log losses
+        writer.add_scalar(f'Loss/{split}_Regression', regression_loss, epoch)
+        writer.add_scalar(f'Loss/{split}_BCE', bce_loss, epoch)
+        writer.add_scalar(f'Loss/{split}_T-Loss', t_loss, epoch)
     metrics = {
         'avg_treatment_effect': np.mean(tau_hat_dragonnet),
         'std_treatment_effect': np.std(tau_hat_dragonnet),
         'auuc': auuc_score,
-        'uplift_at_k': uplift_at_k_scores
+        'uplift_at_k': uplift_at_k_scores,
+        'regression_loss': regression_loss,
+        'bce_loss': bce_loss,
+        't_loss': t_loss
     }
     return tau_hat_dragonnet, y_true_array, t_true_array, metrics
 
@@ -337,6 +309,8 @@ def main():
     parser.add_argument('--hidden_sizes', type=str, default='200,100,100', help='Comma-separated list for hidden layer sizes (e.g., 200,100,100)')
     parser.add_argument('--dropout', type=float, default=0.1, help='Dropout rate for all hidden layers')
     parser.add_argument('--log_dir', type=str, default='runs', help='TensorBoard log directory')
+    parser.add_argument('--patience', type=int, default=None, help='Number of epochs to wait for improvement before early stopping. If None, disables early stopping.')
+    parser.add_argument('--eval_interval', type=int, default=10, help='How often (in epochs) to evaluate and print performance. 1 means every epoch.')
     args = parser.parse_args()
     
     # Parse hidden_sizes argument
@@ -380,7 +354,9 @@ def main():
         alpha=args.alpha, 
         beta=args.beta, 
         device=device,
-        writer=writer
+        writer=writer,
+        patience=args.patience,
+        eval_interval=args.eval_interval
     )
     
     # Evaluate model on test set

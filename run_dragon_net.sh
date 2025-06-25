@@ -11,6 +11,7 @@ fi
 
 # Set log directory for TensorBoard
 LOG_DIR="runs"
+rm -rf "$LOG_DIR"
 mkdir -p "$LOG_DIR"
 
 # Run DragonNet with default parameters
@@ -23,6 +24,7 @@ python dragon_net/run_dragon_net.py \
     --beta 0.1 \
     --hidden_sizes 200,100,100 \
     --dropout 0.1 \
-    --log_dir "$LOG_DIR"
+    --log_dir "$LOG_DIR" \
+    --eval_interval 1
 
 echo "DragonNet training completed!" 
