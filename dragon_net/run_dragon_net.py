@@ -255,9 +255,6 @@ def evaluate_dragonnet(model, data_loader, device=device, writer=None, epoch=Non
     t_true_array = t_true_all.detach().cpu().numpy().flatten()
     tau_hat_dragonnet = tau_hat_dragonnet.detach().cpu().numpy().flatten()
 
-    print(y_true_array[:10])
-    print(t_true_array[:10])
-    print(tau_hat_dragonnet[:10])
     # Compute uplift metrics
     print(f"\nModel Evaluation:")
     print(f"Average predicted treatment effect: {np.mean(tau_hat_dragonnet):.4f}")
