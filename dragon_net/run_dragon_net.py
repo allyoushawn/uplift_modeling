@@ -230,28 +230,34 @@ def evaluate_dragonnet(model, data_loader, device=device, writer=None, epoch=Non
             batch_y = batch_y.to(device)
             batch_t = batch_t.to(device)
             e_x_test, y0_pred_test, y1_pred_test = model(batch_X)
-            # Store predictions and true values
-            y0_pred_list.append(y0_pred_test.cpu())
-            y1_pred_list.append(y1_pred_test.cpu())
-            e_x_list.append(e_x_test.cpu())
-            y_true_list.append(batch_y.cpu())
-            t_true_list.append(batch_t.cpu())
-            # Compute treatment effects
-            tau_batch = (y1_pred_test - y0_pred_test).cpu().numpy()
-            tau_hat_dragonnet.extend(tau_batch)
-    # Concatenate all batches
+            # Store predictions and true values (keep on device for loss calculations)
+            y0_pred_list.append(y0_pred_test)
+            y1_pred_list.append(y1_pred_test)
+            e_x_list.append(e_x_test)
+            y_true_list.append(batch_y)
+            t_true_list.append(batch_t)
+            tau_batch = (y1_pred_test - y0_pred_test)
+            tau_hat_dragonnet.append(tau_batch)
+    
+    # Concatenate all batches (still on device)
     y0_pred_all = torch.cat(y0_pred_list, dim=0)
     y1_pred_all = torch.cat(y1_pred_list, dim=0)
     e_x_all = torch.cat(e_x_list, dim=0)
     y_true_all = torch.cat(y_true_list, dim=0)
     t_true_all = torch.cat(t_true_list, dim=0)
-    tau_hat_dragonnet = np.array(tau_hat_dragonnet).flatten()
-    y_true_array = y_true_all.cpu().numpy().flatten()
-    t_true_array = t_true_all.cpu().numpy().flatten()
-    # Compute losses on the entire set
+    tau_hat_dragonnet = torch.cat(tau_hat_dragonnet, dim=0)
+    # Compute losses on the entire set (on device)
     regression_loss = make_regression_loss(y0_pred_all, y1_pred_all, y_true_all, t_true_all).item()
     bce_loss = make_binary_classification_loss(e_x_all, t_true_all).item()
     t_loss = make_targeted_regularization_loss(e_x_all, y0_pred_all, y1_pred_all, y_true_all, t_true_all, model.epsilon).item()
+    # Move to cpu for numpy metrics
+    y_true_array = y_true_all.detach().cpu().numpy().flatten()
+    t_true_array = t_true_all.detach().cpu().numpy().flatten()
+    tau_hat_dragonnet = tau_hat_dragonnet.detach().cpu().numpy().flatten()
+
+    print(y_true_array[:10])
+    print(t_true_array[:10])
+    print(tau_hat_dragonnet[:10])
     # Compute uplift metrics
     print(f"\nModel Evaluation:")
     print(f"Average predicted treatment effect: {np.mean(tau_hat_dragonnet):.4f}")
