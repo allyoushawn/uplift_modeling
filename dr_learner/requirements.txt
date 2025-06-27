@@ -1,0 +1,5 @@
+pandas>=1.5.0
+numpy>=1.21.0
+scikit-learn>=1.0.0
+causalml>=0.14.1
+scikit-uplift>=0.4.1
